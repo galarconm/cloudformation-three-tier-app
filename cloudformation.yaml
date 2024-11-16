@@ -1,0 +1,198 @@
+# CloudFormation Template for a Three-Tier Web Application
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Three-Tier Web Application'
+
+Resources:
+  # Create a VPC
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.0.0.0/16' #Replace with your CIDR block
+
+  # Create Public Subnet 1 in Availability Zone us-east-1a
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.0.0/24' #Replace with your CIDR block
+      AvailabilityZone: 'us-east-1a' #Replace with your Availability Zone
+
+  # Create Public Subnet 2 in Availability Zone us-east-1b
+  PublicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.1.0/24' #Replace with your CIDR block
+      AvailabilityZone: 'us-east-1b' #Replace with your Availability Zone
+  
+  # Create Private Subnet 1 in Availability Zone us-east-1a
+  PrivateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.2.0/24' #Replace with your CIDR block
+      AvailabilityZone: 'us-east-1a' #Replace with your Availability Zone
+  
+  # Create Private Subnet 2 in Availability Zone us-east-1a
+  PrivateSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.3.0/24' #Replace with your CIDR block
+      AvailabilityZone: 'us-east-1a' #Replace with your Availability Zone
+  
+  # Create an Internet Gateway
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway' 
+  
+  # Attach the Internet Gateway to the VPC
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway #Replace with your Internet Gateway ID
+
+  # Create a Route Table for the public subnets
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC #Replace with your VPC ID
+
+  # Create a route in the Route Table to direct traffic to the Internet Gateway
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+  
+  # Associate Public Subnet 1 with the Route Table
+  PublicSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  
+  # Associate Public Subnet 2 with the Route Table
+  PublicSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+  
+  # Create an Application Load Balancer (ALB)
+  ALB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: 'myALB'
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups: [!Ref ALBSecurityGroup]
+      Scheme: 'internet-facing' 
+      LoadBalancerAttributes:
+        - Key: 'idle_timeout.timeout_seconds' # Set the idle timeout to 60 seconds
+          Value: '60'
+  
+  # Create a Security Group for the ALB to allow HTTP and HTTPS traffic
+  ALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Allow HTTP and HTTPS traffic'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: '80' 
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: 'tcp'
+          FromPort: '443' 
+          ToPort: '443'
+          CidrIp: '0.0.0.0/0'
+  
+  # Create a Launch Configuration for the Auto Scaling Group
+  LaunchConfiguration:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: 'ami-0c55b159cbfafe1f0'  # Replace with a valid AMI ID for your region
+      InstanceType: 't2.micro'
+      SecurityGroups: [!Ref EC2SecurityGroup]
+      KeyName: 'my-key-pair' # Replace with the name of your EC2 key pair
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Update the package index on the instance
+          yum update -y
+          # Install the Apache web server
+          yum install -y httpd
+          # Start the Apache service
+          systemctl start httpd
+          # Enable the Apache service to start on boot
+          systemctl enable httpd
+          # Create a simple HTML file
+          echo "<html><h1>Hello World!</h1></html>" > /var/www/html/index.html
+
+  # Create an Auto Scaling Group for the EC2 instances
+  AutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: '2'
+      TargetGroupARNs: [!Ref ALBTargetGroup]
+
+  # Create a Target Group for the ALB
+  ALBTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: 'myTargetGroup'
+      Port: '80'
+      Protocol: 'HTTP'
+      VpcId: !Ref VPC
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckPort: '80'
+      HealthCheckPath: '/' 
+      Matcher:
+        HttpCode: '200'
+      TargetType: 'instance'
+
+  # Create an RDS instance with Multi-AZ deployment
+  RDSInstance:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      AllocatedStorage: '20'
+      DBInstanceClass: 'db.t2.micro'
+      Engine: 'mysql'
+      MasterUsername: 'admin' # Preferably us SSM Parameter Store for storing sensitive data
+      MasterUserPassword: 'password' # Preferably us SSM Parameter Store for storing sensitive data
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      MultiAZ: 'true'
+  
+  # Create a Subnet Group for the RDS instance
+  DBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: 'Subnet group for RDS'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+  
+  # Create a Security Group for the EC2 instances to allow SSH and HTTP access
+  EC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Allow SSH and HTTP access'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: 'tcp'
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
